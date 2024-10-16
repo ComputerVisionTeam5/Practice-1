@@ -27,53 +27,72 @@ def plot_img(n, figsize,titles,imgs, n_row=1):
     plt.show()
 
 
-def pipeline_features(color_img):
-    copy_img = color_img.copy()
-    gray_img = cv.cvtColor(color_img, cv.COLOR_BGR2GRAY)
-    _, binary_img = cv.threshold(gray_img, 127, 255, cv.THRESH_BINARY)
-    binary_img = -binary_img+255
-    num_labels, labels = cv.connectedComponents(binary_img)
-
-    label_hue = np.uint8(179 * labels / np.max(labels)) 
-    blank_ch = 255 * np.ones_like(label_hue)
-
-    labeled_image = cv.merge([label_hue, blank_ch, blank_ch])
-    labeled_image = cv.cvtColor(labeled_image, cv.COLOR_HSV2BGR)  
-    labeled_image[label_hue == 0] = 0
+def homomorphic_filter(img, d0=30, gammaL=0.5, gammaH=1.5):
+    """
+    Applies a homomorphic filter to enhance the image by reducing uneven lighting.
     
-    for i in range(1, num_labels): 
-        component_mask = np.uint8(labels == i) * 255  # Binary mask for the current component
+    Parameters:
+    - img: Input binary image.
+    - d0: Cutoff frequency for the filter.
+    - gammaL: Lower frequency gain (illumination component).
+    - gammaH: Higher frequency gain (reflectance component).
+    
+    Returns:
+    - img_filtered: The filtered image.
+    """
+    # Convert image to float and apply logarithm
+    img_log = np.log1p(np.array(img, dtype="float"))
 
-        contours, _ = cv.findContours(component_mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+    # Perform Fourier Transform
+    img_fft = np.fft.fft2(img_log)
+    img_fft_shift = np.fft.fftshift(img_fft)
 
-        perimeter = cv.arcLength(contours[0], True)
-        area = cv.contourArea(contours[0])
-        moments = cv.moments(contours[0])
-        hu_moments = cv.HuMoments(moments).flatten()
+    # Create a high-pass filter
+    rows, cols = img.shape
+    crow, ccol = rows // 2, cols // 2  # Center of the image
+    mask = np.ones((rows, cols), np.float32)
+    for i in range(rows):
+        for j in range(cols):
+            dist = np.sqrt((i - crow) ** 2 + (j - ccol) ** 2)
+            mask[i, j] = (gammaH - gammaL) * (1 - np.exp(- (dist ** 2) / (2 * (d0 ** 2)))) + gammaL
 
-        print(f"Component {i}:")
-        print(f"  Perimeter: {perimeter:.2f} pixels")
-        print(f"  Area: {area:.2f} pixels^2")
-        print(f"  Hu Moments: {hu_moments}")
+    # Apply the high-pass filter to the FFT of the image
+    img_fft_filtered = img_fft_shift * mask
 
-        masked_color_image = cv.bitwise_and(color_img, color_img, mask=component_mask)
+    # Inverse FFT to convert back to the spatial domain
+    img_ifft_shift = np.fft.ifftshift(img_fft_filtered)
+    img_ifft = np.fft.ifft2(img_ifft_shift)
+    img_filtered = np.exp(np.real(img_ifft)) - 1
 
+    # Normalize the result to the range [0, 255] and convert to uint8
+    img_filtered = np.uint8(cv.normalize(img_filtered, None, 0, 255, cv.NORM_MINMAX))
 
-        cv.drawContours(copy_img, contours, -1, (0, 255, 0), 2)
+    #plot_img(2, (6, 3), ["Before", "After"], [img, img_filtered])
+            
+    return img_filtered
 
-    plot_img(3, (9, 4.5), ["Color image (contoured)", "Binary", "Connected"], [copy_img, binary_img, labeled_image])
-
+def crop_image(img, cm = 1, pixels_per_cm = 37):
+    minus = cm * pixels_per_cm
+    height, width = img.shape[:2]
+    return(img[minus:height-minus, minus:width-minus])
 
 def pipeline_features(color_img, ID):
+    color_img = crop_image(color_img)
     copy_img = color_img.copy()
 
     gray_img = cv.cvtColor(color_img, cv.COLOR_BGR2GRAY)
 
-    _, binary_img = cv.threshold(gray_img, 150, 255, cv.THRESH_BINARY)
+    homo_img = homomorphic_filter(gray_img)
+
+    _, binary_img = cv.threshold(homo_img, 60, 255, cv.THRESH_BINARY)
 
     binary_img = -binary_img + 255
 
-    num_labels, labels, stats, centroids = cv.connectedComponentsWithStats(binary_img)
+    kernel = np.ones((5,5),np.uint8)
+
+    dilated_img = cv.dilate(binary_img,kernel,iterations = 2)
+
+    num_labels, labels, stats, centroids = cv.connectedComponentsWithStats(dilated_img)
     
     label_hue = np.uint8(179 * labels / np.max(labels)) 
     blank_ch = 255 * np.ones_like(label_hue)
@@ -116,6 +135,6 @@ def pipeline_features(color_img, ID):
             contours, _ = cv.findContours(component_mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
             cv.drawContours(copy_img, contours, -1, (0, 255, 0), 2)  # Color the selected components
 
-    plot_img(3, (9, 4.5), ["Color image (contoured)", "Binary", "Connected"], [copy_img, binary_img, labeled_image])
+    plot_img(3, (9, 4.5), ["Color image (contoured)", "Binary", "Connected"], [copy_img, dilated_img, labeled_image])
 
     return df_filtered
